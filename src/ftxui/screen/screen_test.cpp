@@ -121,4 +121,91 @@ TEST(ScreenTest, NegativeAndZeroDimensions) {
   });
 }
 
+// ToStringDelta: identical screens produce no output.
+TEST(ScreenTest, DeltaNoChange) {
+  Screen previous(10, 5);
+  Screen current(10, 5);
+  previous.at(2, 1) = "A";
+  current.at(2, 1) = "A";
+  EXPECT_EQ(current.ToStringDelta(previous), "");
+}
+
+// ToStringDelta: a single changed cell yields one absolute positioning
+// sequence (1-based row;column) followed by the character.
+TEST(ScreenTest, DeltaSingleCell) {
+  Screen previous(10, 5);
+  Screen current(10, 5);
+  current.at(2, 1) = "A";
+  EXPECT_EQ(current.ToStringDelta(previous), "\x1B[2;3HA");
+}
+
+// ToStringDelta: changes separated by a short gap of unchanged cells are
+// bridged into a single run (overwriting is cheaper than re-positioning).
+TEST(ScreenTest, DeltaGapBridging) {
+  Screen previous(10, 1);
+  Screen current(10, 1);
+  current.at(0, 0) = "A";
+  current.at(3, 0) = "B";
+  EXPECT_EQ(current.ToStringDelta(previous), "\x1B[1;1HA  B");
+}
+
+// ToStringDelta: changes far apart on the same row get their own runs.
+TEST(ScreenTest, DeltaSeparateRuns) {
+  Screen previous(10, 1);
+  Screen current(10, 1);
+  current.at(0, 0) = "A";
+  current.at(9, 0) = "B";
+  EXPECT_EQ(current.ToStringDelta(previous), "\x1B[1;1HA\x1B[1;10HB");
+}
+
+// ToStringDelta: a style change emits the style codes and resets the style
+// to default at the end, mirroring ToString().
+TEST(ScreenTest, DeltaStyleChange) {
+  Screen previous(10, 1);
+  Screen current(10, 1);
+  previous.at(0, 0) = "A";
+  current.at(0, 0) = "A";
+  current.PixelAt(0, 0).bold = true;
+  const std::string delta = current.ToStringDelta(previous);
+  EXPECT_EQ(delta, "\x1B[1;1H\x1B[1mA\x1B[22m");
+}
+
+// ToStringDelta: differing dimensions cannot be patched incrementally — a
+// full clear + redraw is emitted instead.
+TEST(ScreenTest, DeltaDimensionMismatch) {
+  Screen previous(10, 5);
+  Screen current(20, 5);
+  const std::string delta = current.ToStringDelta(previous);
+  const std::string expected = "\x1B[2J\x1B[H" + current.ToString();
+  EXPECT_EQ(delta, expected);
+}
+
+// ToStringDelta: a change on the covered (second) column of a fullwidth
+// glyph re-prints from the glyph itself, so the terminal does not clear
+// half of it.
+TEST(ScreenTest, DeltaFullwidthCoverCell) {
+  Screen previous(4, 1);
+  Screen current(4, 1);
+  previous.at(0, 0) = "あ";
+  current.at(0, 0) = "あ";
+  current.PixelAt(1, 0).bold = true;  // change only the covered cell
+  const std::string delta = current.ToStringDelta(previous);
+  EXPECT_TRUE(delta.rfind("\x1B[1;1H", 0) == 0) << delta;
+  EXPECT_NE(delta.find("あ"), std::string::npos) << delta;
+}
+
+// ToStringDelta: for small changes the delta is (much) smaller than a full
+// redraw of the same screen.
+TEST(ScreenTest, DeltaSmallerThanFullRedraw) {
+  Screen previous(80, 25);
+  Screen current(80, 25);
+  for (int x = 0; x < 80; ++x) {
+    previous.at(x, 10) = "x";
+    current.at(x, 10) = "x";
+  }
+  current.at(40, 10) = "y";
+  const std::string delta = current.ToStringDelta(previous);
+  EXPECT_LT(delta.size(), current.ToString().size() / 10);
+}
+
 }  // namespace ftxui
