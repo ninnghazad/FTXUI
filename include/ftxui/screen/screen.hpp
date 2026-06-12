@@ -37,6 +37,13 @@ class FTXUI_EXPORT(SCREEN) Screen : public Surface {
   std::string ToString() const;
   void ToString(std::string& ss) const;
 
+  // Serialize an incremental update transforming `previous` (as currently
+  // displayed) into this screen, using absolute cursor positioning.
+  // Returns an empty string when nothing changed. See the implementation
+  // for the assumptions made (full-screen usage, default style state).
+  std::string ToStringDelta(const Screen& previous) const;
+  void ToStringDelta(const Screen& previous, std::string& ss) const;
+
   // Print the Screen on to the terminal.
   void Print() const;
 

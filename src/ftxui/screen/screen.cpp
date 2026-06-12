@@ -477,6 +477,146 @@ void Screen::ToString(std::string& ss) const {
   UpdateCellStyle(this, ss, *previous_cell_ref, default_cell);
 }
 
+namespace {
+// Visual equality of two cells. `automerge` is deliberately ignored: it only
+// influences how borders are merged while drawing, not the final output.
+bool CellEquals(const Cell& a, const Cell& b) {
+  return a.character == b.character &&                  //
+         a.blink == b.blink &&                          //
+         a.bold == b.bold &&                            //
+         a.dim == b.dim &&                              //
+         a.italic == b.italic &&                        //
+         a.inverted == b.inverted &&                    //
+         a.underlined == b.underlined &&                //
+         a.underlined_double == b.underlined_double &&  //
+         a.strikethrough == b.strikethrough &&          //
+         a.hyperlink == b.hyperlink &&                  //
+         a.foreground_color == b.foreground_color &&    //
+         a.background_color == b.background_color;
+}
+}  // namespace
+
+/// Serialize an incremental update transforming `previous` (as currently
+/// displayed on the terminal) into this screen.
+/// @see ToStringDelta(const Screen&, std::string&)
+std::string Screen::ToStringDelta(const Screen& previous) const {
+  std::string ss;
+  ToStringDelta(previous, ss);
+  return ss;
+}
+
+/// Serialize an incremental update transforming `previous` (as currently
+/// displayed on the terminal) into this screen, appending it to `ss`.
+///
+/// Changed cells are re-emitted in runs prefixed by absolute cursor
+/// positioning (CSI row;column H, 1-based, relative to the terminal origin).
+/// This makes the output suitable for full-screen applications — e.g. the
+/// alternate screen buffer, or applications rendering for a remote terminal
+/// over telnet/ssh — but NOT for inline usage à la ResetPosition().
+///
+/// Assumptions:
+///  - `previous` is what the terminal currently displays, drawn at origin.
+///  - The terminal is in the default style state. This holds after
+///    ToString() and after a previous ToStringDelta(), both of which reset
+///    the style at the end.
+///
+/// Notes:
+///  - Produces an empty string when nothing changed.
+///  - If the dimensions differ from `previous`, an incremental update is
+///    impossible: a full clear + redraw is emitted instead.
+///  - The cursor position after applying the update is unspecified; emit
+///    your own cursor positioning afterwards.
+///  - For large changes the delta can exceed ToString() in size; callers
+///    aiming for minimal bandwidth may compare both and pick the shorter.
+/// @param previous The previously displayed screen, of the same dimensions.
+/// @param ss The string to append to.
+void Screen::ToStringDelta(const Screen& previous, std::string& ss) const {
+  if (previous.dimx_ != dimx_ || previous.dimy_ != dimy_) {
+    ss += "\x1B[2J\x1B[H";  // Clear screen, cursor to origin.
+    ToString(ss);
+    return;
+  }
+
+  const Cell default_cell;
+  const Cell* previous_cell_ref = &default_cell;
+  bool emitted = false;
+
+  // Re-positioning the cursor costs ~8 bytes (\x1B[yyy;xxxH). Overwriting a
+  // short run of unchanged cells is cheaper than splitting the run.
+  constexpr int kGapBridge = 5;
+
+  for (int y = 0; y < dimy_; ++y) {
+    if (dimx_ == 0) {
+      continue;
+    }
+    const Cell* line = &FastCellAt(0, y);
+    const Cell* prev_line = &previous.FastCellAt(0, y);
+
+    int x = 0;
+    while (x < dimx_) {
+      if (CellEquals(line[x], prev_line[x])) {
+        ++x;
+        continue;
+      }
+
+      // A fullwidth glyph occupies two columns. If the change starts on the
+      // covered (second) column, re-print from the glyph itself so the
+      // terminal does not clear half of it.
+      int start = x;
+      if (start > 0 && line[start - 1].character.size() > 1 &&
+          string_width(line[start - 1].character) == 2) {
+        --start;
+      }
+
+      // Extend the run over further changed cells, bridging short gaps of
+      // unchanged cells (cheaper to overwrite than to re-position).
+      int last_changed = x;
+      int scan = x + 1;
+      while (scan < dimx_ && scan - last_changed <= kGapBridge) {
+        if (!CellEquals(line[scan], prev_line[scan])) {
+          last_changed = scan;
+        }
+        ++scan;
+      }
+      const int end = last_changed + 1;  // one-past the last changed cell
+
+      // Absolute cursor positioning (1-based).
+      ss += "\x1B[";
+      ss += std::to_string(y + 1);
+      ss += ';';
+      ss += std::to_string(start + 1);
+      ss += 'H';
+
+      // Emit the run, mirroring ToString()'s fullwidth handling.
+      bool previous_fullwidth = false;
+      for (int i = start; i < end; ++i) {
+        const auto& cell = line[i];
+        if (!previous_fullwidth) {
+          UpdateCellStyle(this, ss, *previous_cell_ref, cell);
+          previous_cell_ref = &cell;
+          if (cell.character.empty()) {
+            ss += ' ';
+          } else {
+            ss += cell.character;
+          }
+        }
+        if (cell.character.size() <= 1) {
+          previous_fullwidth = false;
+        } else {
+          previous_fullwidth = (string_width(cell.character) == 2);
+        }
+      }
+      emitted = true;
+      x = end;
+    }
+  }
+
+  // Return the terminal to the default style, mirroring ToString().
+  if (emitted) {
+    UpdateCellStyle(this, ss, *previous_cell_ref, default_cell);
+  }
+}
+
 // Print the Screen to the terminal.
 void Screen::Print() const {
   std::cout << ToString() << '\0' << std::flush;
