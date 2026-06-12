@@ -67,30 +67,105 @@ std::string Color::Print(bool is_background_color) const {
   return out;
 }
 
-/// @brief Append the ANSI color code to a string (zero-allocation fast path).
+/// @brief Append the ANSI color code to a string (zero-allocation fast path),
+/// downgraded to the process-global Terminal::ColorSupport() capability.
 /// @param out The string to append to.
 /// @param is_background_color Whether this is a background color code.
 void Color::PrintTo(std::string& out, bool is_background_color) const {
-  switch (type_) {
+  PrintTo(out, is_background_color, Terminal::ColorSupport());
+}
+
+/// @brief Append the ANSI color code to a string (zero-allocation fast path),
+/// downgraded to an explicit terminal capability. This allows the same
+/// Color (and the elements referencing it) to be serialized for terminals
+/// with different capabilities — see Screen::SetColorSupport().
+/// @param out The string to append to.
+/// @param is_background_color Whether this is a background color code.
+/// @param capability The color capability of the target terminal.
+void Color::PrintTo(std::string& out,
+                    bool is_background_color,
+                    Terminal::Color capability) const {
+  const Color color = DowngradedTo(capability);
+  switch (color.type_) {
     case ColorType::Palette1:
       out.append(is_background_color ? "49" : "39", 2);
       return;
     case ColorType::Palette16:
-      out.append(palette16code[2 * red_ + (is_background_color ? 1 : 0)]);
+      out.append(palette16code[2 * color.red_ + (is_background_color ? 1 : 0)]);
       return;
     case ColorType::Palette256:
       out.append(is_background_color ? "48;5;" : "38;5;", 5);
-      AppendNumber(out, red_);
+      AppendNumber(out, color.red_);
       return;
     case ColorType::TrueColor:
       out.append(is_background_color ? "48;2;" : "38;2;", 5);
-      AppendNumber(out, red_);
+      AppendNumber(out, color.red_);
       out += ';';
-      AppendNumber(out, green_);
+      AppendNumber(out, color.green_);
       out += ';';
-      AppendNumber(out, blue_);
+      AppendNumber(out, color.blue_);
       return;
   }
+}
+
+/// @brief Returns this color reduced to what `capability` can represent.
+/// TrueColor maps to the closest Palette256 entry (or Palette16 below that),
+/// Palette256 maps to its closest Palette16 entry. Colors already
+/// representable are returned unchanged.
+///
+/// Note: colors used to be downgraded at construction time against the
+/// process-global Terminal::ColorSupport(). Downgrading lazily here keeps
+/// full fidelity in the stored Color, so the same element tree can be
+/// serialized for terminals with different capabilities, and gradients /
+/// interpolation operate on full RGB before quantization.
+/// @param capability The color capability of the target terminal.
+Color Color::DowngradedTo(Terminal::Color capability) const {
+  if (type_ == ColorType::Palette1 || type_ == ColorType::Palette16) {
+    return *this;
+  }
+
+  if (type_ == ColorType::Palette256) {
+    if (capability >= Terminal::Palette256) {
+      return *this;
+    }
+    Color out = *this;
+    out.type_ = ColorType::Palette16;
+    out.red_ = GetColorInfo(Color::Palette256(red_)).index_16;
+    return out;
+  }
+
+  // ColorType::TrueColor:
+  if (capability == Terminal::TrueColor) {
+    return *this;
+  }
+
+  // Find the closest Color from the database:
+  const int max_distance = 256 * 256 * 3;
+  int closest = max_distance;
+  int best = 0;
+  const int database_begin = 16;
+  const int database_end = 256;
+  for (int i = database_begin; i < database_end; ++i) {
+    const ColorInfo color_info = GetColorInfo(Color::Palette256(i));
+    const int dr = color_info.red - red_;
+    const int dg = color_info.green - green_;
+    const int db = color_info.blue - blue_;
+    const int dist = dr * dr + dg * dg + db * db;
+    if (closest > dist) {
+      closest = dist;
+      best = i;
+    }
+  }
+
+  Color out = *this;
+  if (capability == Terminal::Palette256) {
+    out.type_ = ColorType::Palette256;
+    out.red_ = best;
+  } else {
+    out.type_ = ColorType::Palette16;
+    out.red_ = GetColorInfo(Color::Palette256(best)).index_16;
+  }
+  return out;
 }
 
 /// @brief Build a transparent color.
@@ -104,14 +179,10 @@ Color::Color(Palette16 index)
     : type_(ColorType::Palette16), red_(index), alpha_(255) {}
 
 /// @brief Build a color using Palette256 colors.
+/// The color is stored at full fidelity; reduction for less capable
+/// terminals happens at serialization time (see DowngradedTo).
 Color::Color(Palette256 index)
-    : type_(ColorType::Palette256), red_(index), alpha_(255) {
-  if (Terminal::ColorSupport() >= Terminal::Color::Palette256) {
-    return;
-  }
-  type_ = ColorType::Palette16;
-  red_ = GetColorInfo(Color::Palette256(red_)).index_16;
-}
+    : type_(ColorType::Palette256), red_(index), alpha_(255) {}
 
 /// @brief Build a Color from its RGB representation.
 /// https://en.wikipedia.org/wiki/RGB_color_model
@@ -120,42 +191,14 @@ Color::Color(Palette256 index)
 /// @param green The quantity of green [0,255]
 /// @param blue The quantity of blue [0,255]
 /// @param alpha The quantity of alpha [0,255]
+/// The color is stored at full fidelity; reduction for less capable
+/// terminals happens at serialization time (see DowngradedTo).
 Color::Color(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha)
     : type_(ColorType::TrueColor),
       red_(red),
       green_(green),
       blue_(blue),
-      alpha_(alpha) {
-  if (Terminal::ColorSupport() == Terminal::Color::TrueColor) {
-    return;
-  }
-
-  // Find the closest Color from the database:
-  const int max_distance = 256 * 256 * 3;
-  int closest = max_distance;
-  int best = 0;
-  const int database_begin = 16;
-  const int database_end = 256;
-  for (int i = database_begin; i < database_end; ++i) {
-    const ColorInfo color_info = GetColorInfo(Color::Palette256(i));
-    const int dr = color_info.red - red;
-    const int dg = color_info.green - green;
-    const int db = color_info.blue - blue;
-    const int dist = dr * dr + dg * dg + db * db;
-    if (closest > dist) {
-      closest = dist;
-      best = i;
-    }
-  }
-
-  if (Terminal::ColorSupport() == Terminal::Color::Palette256) {
-    type_ = ColorType::Palette256;
-    red_ = best;
-  } else {
-    type_ = ColorType::Palette16;
-    red_ = GetColorInfo(Color::Palette256(best)).index_16;
-  }
-}
+      alpha_(alpha) {}
 
 /// @brief Build a Color from its RGB representation.
 /// https://en.wikipedia.org/wiki/RGB_color_model

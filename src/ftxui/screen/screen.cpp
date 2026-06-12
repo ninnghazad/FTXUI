@@ -129,11 +129,12 @@ void UpdateCellStyle(const Screen* screen,
 
   if (FTXUI_UNLIKELY(next.foreground_color != prev.foreground_color ||
                      next.background_color != prev.background_color)) {
+    const Terminal::Color capability = screen->color_support();
     ss += "\x1B[";
-    next.foreground_color.PrintTo(ss, false);
+    next.foreground_color.PrintTo(ss, false, capability);
     ss += 'm';
     ss += "\x1B[";
-    next.background_color.PrintTo(ss, true);
+    next.background_color.PrintTo(ss, true, capability);
     ss += 'm';
   }
 }

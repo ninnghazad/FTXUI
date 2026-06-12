@@ -7,6 +7,7 @@
 #include <cstdint>  // for uint8_t
 #include <string>   // for string
 
+#include "ftxui/screen/terminal.hpp"  // for Terminal::Color
 #include "ftxui/util/export.hpp"
 
 #ifdef RGB
@@ -320,7 +321,19 @@ class FTXUI_EXPORT(SCREEN) Color {
   bool operator!=(const Color& rhs) const;
 
   std::string Print(bool is_background_color) const;
+  // Emit the ANSI code for this color, downgraded to the process-global
+  // Terminal::ColorSupport() capability (backward-compatible overload).
   void PrintTo(std::string& out, bool is_background_color) const;
+  // Emit the ANSI code for this color, downgraded to the given capability.
+  // Used by Screen::ToString() so each Screen can target a different
+  // terminal (see Screen::SetColorSupport).
+  void PrintTo(std::string& out,
+               bool is_background_color,
+               Terminal::Color capability) const;
+  // Returns this color reduced to what `capability` can represent:
+  // TrueColor -> closest Palette256 (or Palette16) entry, Palette256 ->
+  // Palette16. Colors already representable are returned unchanged.
+  Color DowngradedTo(Terminal::Color capability) const;
   bool IsOpaque() const { return alpha_ == 255; }
 
  private:

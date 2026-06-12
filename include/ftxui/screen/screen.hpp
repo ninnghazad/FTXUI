@@ -78,9 +78,19 @@ class FTXUI_EXPORT(SCREEN) Screen : public Surface {
   const SelectionStyle& GetSelectionStyle() const;
   void SetSelectionStyle(SelectionStyle decorator);
 
+  /// The color capability used when serializing this Screen (ToString /
+  /// Print). Defaults to the capability of the terminal attached to the
+  /// process. Override it to render for a different terminal — e.g. one
+  /// Screen per network client, each with its own capability.
+  Terminal::Color color_support() const { return color_support_; }
+  void SetColorSupport(Terminal::Color capability) {
+    color_support_ = capability;
+  }
+
  protected:
   Cursor cursor_;
   std::vector<std::string> hyperlinks_ = {""};
+  Terminal::Color color_support_ = Terminal::ColorSupport();
 
   // The current selection style. This is overridden by various dom elements.
   SelectionStyle selection_style_ = [](Cell& cell) { cell.inverted ^= true; };
